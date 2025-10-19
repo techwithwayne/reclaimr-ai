@@ -1,0 +1,59 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# --- Env / Secrets ---
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.crt
+
+# --- Virtualenv / Tools ---
+.venv/
+venv/
+pip-wheel-metadata/
+.poetry/
+.python-version
+
+# --- Django / App Artifacts ---
+# keep migrations tracked; don't ignore /migrations/*.py
+db.sqlite3
+*.sqlite3
+media/
+staticfiles/           # collectstatic output (if used)
+collected_static/
+
+# --- Logs / Coverage / Testing ---
+*.log
+log/
+logs/
+coverage.xml
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+
+# --- Editors / OS ---
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# --- Celery / Scheduler ---
+celerybeat-schedule
+celerybeat.pid
+
+# --- Node (if widget bundling later) ---
+node_modules/
+npm-debug.log*
+yarn-error.log*
