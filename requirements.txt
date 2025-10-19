@@ -1,0 +1,9 @@
+Django==5.2.7
+djangorestframework==3.16.1
+celery==5.5.3
+redis==6.2.0
+psycopg[binary]==3.2.11
+sendgrid==6.12.5
+twilio==9.8.4
+python-dotenv==1.1.1
+gunicorn==23.0.0
