@@ -1,49 +1,57 @@
-from __future__ import annotations
+from typing import NamedTuple, Optional, Tuple
+from django.db import OperationalError, ProgrammingError
+from django.core.exceptions import ImproperlyConfigured
+from rest_framework.request import Request
 
-from typing import Optional, Tuple
-from django.http import HttpRequest
+try:
+    from apps.accounts.models.account import Account  # type: ignore
+except Exception:
+    # Import-time tolerance; actual DB lookup guarded below.
+    Account = None  # type: ignore
 
 
-def get_api_key(request: HttpRequest) -> Optional[str]:
+HEADER_NAME = "HTTP_X_ACCOUNT_KEY"
+
+
+class AuthResult(NamedTuple):
+    ok: bool
+    status: int
+    reason: str
+    account: Optional["Account"]
+
+
+def _safe_get_account_by_key(api_key: str) -> Tuple[Optional["Account"], Optional[str]]:
     """
-    Extract API key from headers. Supports both modern and WSGI META variants.
+    DB-safe lookup that won't crash if migrations/tables aren't ready.
+    Returns (Account|None, error_reason|None)
     """
-    return request.headers.get("X-Account-Key") or request.META.get("HTTP_X_ACCOUNT_KEY")
+    if Account is None:
+        return None, "import_failed"
 
-
-def resolve_account_by_key(api_key: str) -> Tuple[object | None, str | None]:
-    """
-    Attempt to resolve an Account by API key.
-
-    Returns:
-      (account, None)                  if DB is available and key is valid
-      (None, "invalid_api_key")        if DB is available but key is unknown
-      (None, "db_unavailable:*")       if DB exists but not migrated/ready
-      (None, "models_unavailable:*")   if models cannot be imported in this env
-    """
     try:
-        from django.db import OperationalError, ProgrammingError  # type: ignore
-        from apps.accounts.models.account import Account  # type: ignore
-        try:
-            acct = Account.objects.filter(api_key=api_key).first()
-            if acct:
-                return acct, None
-            return None, "invalid_api_key"
-        except (OperationalError, ProgrammingError) as db_err:
-            return None, f"db_unavailable:{db_err.__class__.__name__}"
-    except Exception as e:
-        # Models not importable in this environment (e.g., local smoke without apps wired)
-        return None, f"models_unavailable:{e.__class__.__name__}"
+        return Account.objects.get(api_key=api_key), None
+    except (OperationalError, ProgrammingError, ImproperlyConfigured):
+        # DB not ready / table missing locally. Treat as service unavailable, not 500.
+        return None, "db_unavailable"
+    except Account.DoesNotExist:  # type: ignore[attr-defined]
+        return None, "invalid_key"
 
 
-def get_account_from_request(request: HttpRequest) -> Tuple[object | None, str | None]:
+def authenticate(request: Request) -> AuthResult:
     """
-    Full auth helper:
-      - Missing key → (None, "auth_required")
-      - Otherwise → resolve_account_by_key(key)
-    Never raises; safe for DB-free smoke tests.
+    Auth via 'X-Account-Key' header.
+    - Missing header -> 401 / missing_key
+    - DB unavailable (no tables) -> 503 / db_unavailable
+    - Invalid key -> 401 / invalid_key
+    - Valid key -> 200 / ok
     """
-    key = get_api_key(request)
-    if not key:
-        return None, "auth_required"
-    return resolve_account_by_key(key)
+    api_key = request.META.get(HEADER_NAME)  # 'HTTP_X_ACCOUNT_KEY'
+    if not api_key:
+        return AuthResult(False, 401, "missing_key", None)
+
+    account, err = _safe_get_account_by_key(api_key)
+    if err == "db_unavailable" or err == "import_failed":
+        return AuthResult(False, 503, "db_unavailable", None)
+    if account is None:
+        return AuthResult(False, 401, "invalid_key", None)
+    return AuthResult(True, 200, "ok", account)
