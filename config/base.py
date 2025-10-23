@@ -123,3 +123,25 @@ if not isinstance(CSRF_TRUSTED_ORIGINS, (list, tuple)):
     CSRF_TRUSTED_ORIGINS = []
 CSRF_TRUSTED_ORIGINS = list({*CSRF_TRUSTED_ORIGINS, "https://apps.techwithwayne.com", "https://techwithwayne.pythonanywhere.com"})
 # --- end Reclaimr block ---
+
+# --- Reclaimr required apps safety block (do not remove) ---
+try:
+    INSTALLED_APPS  # noqa: F401
+except NameError:  # pragma: no cover
+    INSTALLED_APPS = []
+
+_required_reclaimr_apps = [
+    "rest_framework",
+    "apps.core",
+    "apps.accounts",
+    "apps.contacts",
+    "apps.leads",
+    "apps.sequences",
+    "apps.messaging",
+    "apps.api",
+]
+for _app in _required_reclaimr_apps:
+    if _app not in INSTALLED_APPS:
+        INSTALLED_APPS.append(_app)
+# --- end safety block ---
+
