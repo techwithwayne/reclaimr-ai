@@ -105,3 +105,21 @@ EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 DEFAULT_FROM_EMAIL = "Reclaimr <noreply@example.com>"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# --- Reclaimr required host/origin safety block (appended) ---
+try:
+    ALLOWED_HOSTS  # type: ignore[name-defined]
+except Exception:
+    ALLOWED_HOSTS = []
+if not isinstance(ALLOWED_HOSTS, (list, tuple)):
+    ALLOWED_HOSTS = []
+ALLOWED_HOSTS = list({*ALLOWED_HOSTS, "apps.techwithwayne.com", "techwithwayne.pythonanywhere.com"})
+
+try:
+    CSRF_TRUSTED_ORIGINS  # type: ignore[name-defined]
+except Exception:
+    CSRF_TRUSTED_ORIGINS = []
+if not isinstance(CSRF_TRUSTED_ORIGINS, (list, tuple)):
+    CSRF_TRUSTED_ORIGINS = []
+CSRF_TRUSTED_ORIGINS = list({*CSRF_TRUSTED_ORIGINS, "https://apps.techwithwayne.com", "https://techwithwayne.pythonanywhere.com"})
+# --- end Reclaimr block ---
