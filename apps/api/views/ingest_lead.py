@@ -1,108 +1,81 @@
-from __future__ import annotations
+from django.core.exceptions import ImproperlyConfigured
+from django.db import OperationalError, ProgrammingError
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from rest_framework import status
 
-import json
-from typing import Any, Dict, Optional
-
-from django.http import JsonResponse, HttpRequest
-from django.views.decorators.http import require_http_methods
-
-# Centralized, DB-tolerant auth helper
-from apps.accounts.services.api_key_auth import (
-    get_api_key,
-    resolve_account_by_key,
-)
+from apps.accounts.services.api_key_auth import authenticate
+from apps.api.serializers.lead_in import LeadInSerializer
 
 
-def _safe_json(request: HttpRequest) -> Dict[str, Any]:
-    """Parse JSON body safely. Returns {} on any failure."""
-    try:
-        body = request.body.decode("utf-8") if request.body else ""
-        return json.loads(body) if body else {}
-    except Exception:
-        return {}
-
-
-@require_http_methods(["POST"])
-def ingest(request: HttpRequest) -> JsonResponse:
+@api_view(["POST"])
+def ingest(request):
     """
-    Auth-first lead ingest:
-    - Missing/invalid X-Account-Key => 401 (even if JSON invalid).
-    - With valid key & DB available & Account exists => 201 + persisted record(s).
-    - With valid key but DB/models unavailable during local smoke => 202 (accepted, persistence skipped).
+    Auth-first lead ingestion endpoint.
+
+    Flow:
+      1) Authenticate via X-Account-Key (missing/invalid => 401; DB unavailable => 503).
+      2) Validate payload via LeadInSerializer (400 on invalid).
+      3) If DB available: upsert Contact, create Lead => 201.
+         If DB unavailable: return 202 Accepted (validated, but not persisted).
     """
-    api_key: Optional[str] = get_api_key(request)
+    # 1) Auth-first
+    auth = authenticate(request)
+    if not auth.ok:
+        if auth.reason == "missing_key":
+            return Response({"detail": "missing_key"}, status=status.HTTP_401_UNAUTHORIZED)
+        if auth.reason == "invalid_key":
+            return Response({"detail": "invalid_key"}, status=status.HTTP_401_UNAUTHORIZED)
+        # DB not ready / imports failed
+        return Response({"detail": "db_unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-    # ---- AUTH FIRST: reject immediately if no key provided ----
-    if not api_key:
-        return JsonResponse({"detail": "auth_required"}, status=401)
+    account = auth.account
 
-    # Resolve account (tolerant to DB/model availability)
-    account, err = resolve_account_by_key(api_key)
+    # 2) Validate inbound payload
+    serializer = LeadInSerializer(data=request.data)
+    if not serializer.is_valid():
+        # NOTE: Even if body is invalid, auth-first must have already passed above.
+        return Response({"errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
 
-    if err is None and account is None:
-        # DB available but key not found
-        return JsonResponse({"detail": "invalid_api_key"}, status=401)
+    data = serializer.validated_data
+    source = data["source"]
+    contact_in = data["contact"]
+    metadata = data.get("metadata") or {}
 
-    # Parse JSON only after auth step
-    payload = _safe_json(request)
-    source = payload.get("source")
-    contact = payload.get("contact") or {}
-    email = (contact.get("email") or "").strip()
-    name = (contact.get("name") or "").strip()
-
-    # Local DB-free path or models not ready: accept without persistence
-    if account is None and err is not None:
-        return JsonResponse(
-            {
-                "status": "accepted",
-                "note": err,
-                "echo": {"source": source, "contact_email": email},
-            },
-            status=202,
-        )
-
-    # Persistence path when models/DB are available
+    # 3) Persist when DB is available; otherwise degrade gracefully
     try:
-        from apps.contacts.models.contact import Contact  # type: ignore
-        from apps.leads.models.lead import Lead  # type: ignore
+        from apps.contacts.models.contact import Contact
+        from apps.leads.models.lead import Lead
 
-        contact_obj, created = Contact.objects.get_or_create(
-            account=account,
-            defaults={"email": email, "name": name},
+        # Upsert contact (natural key on email)
+        defaults = {
+            "name": contact_in.get("name", ""),
+            "phone": contact_in.get("phone", ""),
+            "account": account,
+        }
+        contact, _ = Contact.objects.update_or_create(
+            email=contact_in["email"], defaults=defaults
         )
-
-        # Update email/name if provided and changed
-        updates = {}
-        if email and contact_obj.email != email:
-            updates["email"] = email
-        if name and getattr(contact_obj, "name", "") != name:
-            updates["name"] = name
-        if updates:
-            for k, v in updates.items():
-                setattr(contact_obj, k, v)
-            contact_obj.save(update_fields=list(updates.keys()))
 
         lead = Lead.objects.create(
             account=account,
-            contact=contact_obj,
-            source=(source or "unknown"),
+            contact=contact,
+            source=source,
             status="new",
+            metadata=metadata,
         )
-        return JsonResponse(
-            {
-                "status": "created",
-                "lead_id": getattr(lead, "id", None),
-                "contact_email": email,
-            },
-            status=201,
+        return Response(
+            {"id": lead.pk, "status": "created", "source": source},
+            status=status.HTTP_201_CREATED,
         )
-    except Exception as e:
-        # Gracefully degrade if models/migrations incomplete
-        return JsonResponse(
+
+    except (OperationalError, ProgrammingError, ImproperlyConfigured):
+        # Database not migrated/ready locally; accept the payload but signal deferred persistence.
+        return Response(
             {
                 "status": "accepted",
-                "note": f"persistence_skipped:{e.__class__.__name__}",
-                "echo": {"source": source, "contact_email": email},
+                "reason": "db_unavailable_but_validated",
+                "source": source,
             },
-            status=202,
+            status=status.HTTP_202_ACCEPTED,
         )
